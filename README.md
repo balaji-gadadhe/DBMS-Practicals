@@ -651,57 +651,44 @@ WHERE Salary > (SELECT AVG(Salary) FROM Employee);
 ## Schema Setup
 
 ```sql
+-- Create Employee table
 CREATE TABLE Employee (
-    emp_id     NUMBER PRIMARY KEY,
-    dept_id    NUMBER,
-    emp_name   VARCHAR2(50),
-    DoJ        DATE,               -- Date of Joining
-    salary     NUMBER,
-    commission NUMBER,             -- Keep NULL initially
-    job_title  VARCHAR2(50)
+    emp_id INT PRIMARY KEY,
+    dept_id INT,
+    emp_name VARCHAR2(50),
+    DoJ DATE,
+    salary NUMBER,
+    commission NUMBER,
+    job_title VARCHAR2(50)
 );
 
-INSERT INTO Employee VALUES (1, 10, 'Amit',  TO_DATE('2010-01-01','YYYY-MM-DD'), 15000, NULL, 'Developer');
-INSERT INTO Employee VALUES (2, 20, 'Priya', TO_DATE('2005-06-15','YYYY-MM-DD'), 8000,  NULL, 'Analyst');
-INSERT INTO Employee VALUES (3, 10, 'Raj',   TO_DATE('2018-03-20','YYYY-MM-DD'), 2500,  NULL, 'Intern');
-INSERT INTO Employee VALUES (4, 30, 'Neha',  TO_DATE('2015-09-10','YYYY-MM-DD'), 6000,  NULL, 'Executive');
+-- Create Departments table (needed for the function)
+CREATE TABLE Departments (
+    dept_id INT PRIMARY KEY,
+    manager_name VARCHAR2(50)
+);
+
+-- Insert dummy data so we have something to calculate
+INSERT INTO Employee VALUES (1, 10, 'Amit', TO_DATE('2010-01-01', 'YYYY-MM-DD'), 12000, NULL, 'Manager');
+INSERT INTO Employee VALUES (2, 20, 'Rahul', TO_DATE('2020-10-20', 'YYYY-MM-DD'), 2500, NULL, 'Intern');
+INSERT INTO Departments VALUES (10, 'Ramesh');
+INSERT INTO Departments VALUES (20, 'Suresh');
 COMMIT;
 ```
 
 ## Query 1 — Stored Procedure: Calculate Commission
 
 ```sql
--- PROCEDURE = reusable named PL/SQL block
--- FOR loop with cursor iterates over every employee
--- MONTHS_BETWEEN gives months; divide by 12 for years
-
-CREATE OR REPLACE PROCEDURE calc_commission AS
-    v_exp  NUMBER;
-    v_comm NUMBER;
+CREATE OR REPLACE PROCEDURE set_commission IS
 BEGIN
-    -- Loop through all employees
-    FOR rec IN (SELECT emp_id, salary, DoJ FROM Employee) LOOP
-
-        -- Calculate years of experience from Date of Joining
-        v_exp := TRUNC(MONTHS_BETWEEN(SYSDATE, rec.DoJ) / 12);
-
-        -- Apply commission rules
-        IF rec.salary > 10000 THEN
-            v_comm := rec.salary * 0.004;           -- 0.4%
-        ELSIF rec.salary < 10000 AND v_exp > 10 THEN
-            v_comm := rec.salary * 0.0035;          -- 0.35%
-        ELSIF rec.salary < 3000 THEN
-            v_comm := rec.salary * 0.0025;          -- 0.25%
-        ELSE
-            v_comm := rec.salary * 0.0015;          -- 0.15% (default)
-        END IF;
-
-        -- Update commission in table
-        UPDATE Employee SET commission = v_comm WHERE emp_id = rec.emp_id;
-    END LOOP;
-
+    UPDATE Employee
+    SET commission = CASE
+        WHEN salary > 10000 THEN salary * 0.004
+        WHEN salary < 10000 AND (SYSDATE - DoJ) / 365 > 10 THEN salary * 0.0035
+        WHEN salary < 3000 THEN salary * 0.0025
+        ELSE salary * 0.0015
+    END;
     COMMIT;
-    DBMS_OUTPUT.PUT_LINE('All commissions updated successfully.');
 END;
 /
 
@@ -709,7 +696,15 @@ END;
 EXEC calc_commission;
 
 -- Verify:
-SELECT emp_id, emp_name, salary, commission FROM Employee;
+-- Run the procedure
+BEGIN
+    set_commission;
+END;
+/
+
+-- Check the result (You should see numbers in the commission column now)
+SELECT * FROM Employee;
+
 ```
 
 ## Query 2 — Function: Return Manager name for a Department
@@ -717,33 +712,31 @@ SELECT emp_id, emp_name, salary, commission FROM Employee;
 ```sql
 -- FUNCTION = like a procedure but RETURNS a value
 -- Takes dept_id as input, returns manager name as output
-
-CREATE OR REPLACE FUNCTION get_manager_name (p_dept_id IN NUMBER)
-RETURN VARCHAR2 AS
-    v_name VARCHAR2(50);
+CREATE OR REPLACE FUNCTION get_manager(did NUMBER)
+RETURN VARCHAR2 IS
+    mname VARCHAR2(30);
 BEGIN
-    -- Find employee in that dept with Manager in their job title
-    SELECT emp_name INTO v_name
-    FROM Employee
-    WHERE dept_id = p_dept_id
-      AND ROWNUM = 1;  -- Get first employee (adjust logic as needed)
-
-    RETURN v_name;
-
-EXCEPTION
-    WHEN NO_DATA_FOUND THEN
-        RETURN 'No Manager Found';
+    SELECT manager_name INTO mname
+    FROM Departments
+    WHERE dept_id = did;
+    
+    RETURN mname;
 END;
 /
 
--- Call the function:
+Test the Function (The Output)
+
+```
+
+SET SERVEROUTPUT ON;
 DECLARE
-    v_result VARCHAR2(50);
+    res VARCHAR2(30);
 BEGIN
-    v_result := get_manager_name(10);
-    DBMS_OUTPUT.PUT_LINE('Manager of Dept 10: ' || v_result);
+    res := get_manager(10); -- 10 is the Department ID
+    DBMS_OUTPUT.PUT_LINE('Manager Name is: ' || res);
 END;
 /
+```
 ```
 
 ---
@@ -755,14 +748,22 @@ END;
 ## Schema Setup
 
 ```sql
--- Reuse Employee table from PS6, or create fresh:
+-- Create the main table
+CREATE TABLE Employee (
+    emp_id INT PRIMARY KEY,
+    emp_name VARCHAR2(50),
+    DoJ DATE,
+    salary NUMBER
+);
+
+-- Create the table where results will be stored
 CREATE TABLE Salary_Increment (
-    emp_id     NUMBER,
+    emp_id INT,
     new_salary NUMBER
 );
 
--- Ensure employee 115 exists:
-INSERT INTO Employee VALUES (115, 10, 'Balaji', TO_DATE('2012-06-01','YYYY-MM-DD'), 40000, NULL, 'Developer');
+-- Insert a test employee with ID 115
+INSERT INTO Employee VALUES (115, 'John Doe', TO_DATE('2012-01-01', 'YYYY-MM-DD'), 5000);
 COMMIT;
 ```
 
@@ -772,67 +773,54 @@ COMMIT;
 SET SERVEROUTPUT ON;
 
 DECLARE
-    -- Accept emp_id from user at runtime (& prompts for input)
-    v_emp_id    NUMBER := &emp_id;
-
-    v_salary    NUMBER;
-    v_doj       DATE;
-    v_exp       NUMBER;
-    v_new_sal   NUMBER;
-
-    -- User-defined exception for when employee not found
-    e_not_found EXCEPTION;
+    -- These are your local variables to hold data temporarily
+    eid NUMBER;
+    yrs NUMBER;
+    sal NUMBER;
+    newsal NUMBER;
 
 BEGIN
-    -- Try to fetch employee data
-    BEGIN
-        SELECT salary, DoJ
-        INTO v_salary, v_doj
-        FROM Employee
-        WHERE emp_id = v_emp_id;
+    -- 1. Accept input from user (The & creates the pop-up)
+    eid := &emp_id;
 
-    EXCEPTION
-        WHEN NO_DATA_FOUND THEN
-            RAISE e_not_found;   -- Trigger our custom exception
-    END;
+    -- 2. Fetch current salary and calculate years of experience
+    SELECT salary, (SYSDATE - DoJ) / 365
+    INTO sal, yrs
+    FROM Employee
+    WHERE emp_id = eid;
 
-    -- Calculate years of experience
-    v_exp := TRUNC(MONTHS_BETWEEN(SYSDATE, v_doj) / 12);
-
-    -- Apply increment rules
-    IF v_exp > 10 THEN
-        v_new_sal := v_salary * 1.20;    -- 20% hike
-    ELSIF v_exp > 5 THEN
-        v_new_sal := v_salary * 1.10;    -- 10% hike
+    -- 3. Logic for Increment
+    IF yrs > 10 THEN
+        newsal := sal * 1.20; -- 20% increase
+    ELSIF yrs > 5 THEN
+        newsal := sal * 1.10; -- 10% increase
     ELSE
-        v_new_sal := v_salary * 1.05;    -- 5% hike
+        newsal := sal * 1.05; -- 5% increase
     END IF;
 
-    -- Update salary in Employee table
-    UPDATE Employee SET salary = v_new_sal WHERE emp_id = v_emp_id;
-
-    -- Store incremented salary in Salary_Increment table
+    -- 4. Store the result in the second table
     INSERT INTO Salary_Increment (emp_id, new_salary)
-    VALUES (v_emp_id, v_new_sal);
+    VALUES (eid, newsal);
 
+    DBMS_OUTPUT.PUT_LINE('Salary processed for Employee ID: ' || eid);
     COMMIT;
 
-    -- Display result
-    DBMS_OUTPUT.PUT_LINE('--- Salary Increment Summary ---');
-    DBMS_OUTPUT.PUT_LINE('Employee ID  : ' || v_emp_id);
-    DBMS_OUTPUT.PUT_LINE('Experience   : ' || v_exp || ' years');
-    DBMS_OUTPUT.PUT_LINE('Old Salary   : ' || v_salary);
-    DBMS_OUTPUT.PUT_LINE('New Salary   : ' || v_new_sal);
-
 EXCEPTION
-    -- Handle our custom exception
-    WHEN e_not_found THEN
-        DBMS_OUTPUT.PUT_LINE('ERROR: Employee with ID ' || v_emp_id || ' does not exist.');
-    -- Handle any other unexpected errors
+    -- 5. Exception Handling (If ID 115 doesn't exist)
+    WHEN NO_DATA_FOUND THEN
+        DBMS_OUTPUT.PUT_LINE('Error: Employee ID ' || eid || ' does not exist.');
+    
+    -- Catch-all for any other weird errors
     WHEN OTHERS THEN
-        DBMS_OUTPUT.PUT_LINE('Unexpected Error: ' || SQLERRM);
+        DBMS_OUTPUT.PUT_LINE('An unexpected error occurred.');
+
 END;
 /
+```
+Step 3: Verify the Result
+
+```
+SELECT * FROM Salary_Increment;
 ```
 
 ---
@@ -844,47 +832,48 @@ END;
 ## Schema Setup
 
 ```sql
+-- Main Table
 CREATE TABLE Employee (
-    emp_id     NUMBER PRIMARY KEY,
-    dept_id    NUMBER,
-    emp_name   VARCHAR2(50),
-    DoJ        DATE,
-    salary     NUMBER,
-    commission NUMBER,
-    job_title  VARCHAR2(50)
+    emp_id INT PRIMARY KEY,
+    dept_id INT,
+    emp_name VARCHAR2(50),
+    DoJ DATE,
+    salary NUMBER,
+    job_title VARCHAR2(50)
 );
 
--- job_history stores old job info whenever job_title changes
+-- History Table (For Requirement 2)
 CREATE TABLE job_history (
-    emp_id        NUMBER,
+    emp_id INT,
     old_job_title VARCHAR2(50),
-    old_dept_id   NUMBER,
-    start_date    DATE,   -- Original DoJ
-    end_date      DATE    -- System date when change happened
+    old_dept_id INT,
+    start_date DATE,
+    end_date DATE
 );
 
-INSERT INTO Employee VALUES (1, 10, 'Amit',  TO_DATE('2015-01-10','YYYY-MM-DD'), 50000, NULL, 'Analyst');
-INSERT INTO Employee VALUES (2, 20, 'Priya', TO_DATE('2018-06-01','YYYY-MM-DD'), 40000, NULL, 'Executive');
+-- Insert a test employee
+INSERT INTO Employee VALUES (101, 10, 'Amit', TO_DATE('2020-01-01', 'YYYY-MM-DD'), 5000, 'Junior Dev');
 COMMIT;
 ```
+Step 2: Trigger 1 (The Security Guard)
+This ensures salary never goes down. It is a BEFORE trigger because we want to stop the change before it hits the database.
 
-## Trigger 1 — Prevent salary decrease
-
-```sql
--- BEFORE UPDATE: fires before the UPDATE is applied
--- :OLD.salary = salary before change
--- :NEW.salary = salary being set (proposed new value)
--- RAISE_APPLICATION_ERROR cancels the operation and shows error
-
+```
 CREATE OR REPLACE TRIGGER trg_no_salary_decrease
 BEFORE UPDATE OF salary ON Employee
-FOR EACH ROW                        -- Fires for each row being updated
+FOR EACH ROW
 BEGIN
+    -- Check if the new salary is lower than the old one
     IF :NEW.salary < :OLD.salary THEN
-        RAISE_APPLICATION_ERROR(-20001, 'ERROR: Salary cannot be decreased!');
+        -- -20002 is a custom error code you can choose
+        RAISE_APPLICATION_ERROR(-20002, 'Salary cannot decrease!');
     END IF;
 END;
 /
+```
+How to test it:
+Try to lower the salary: UPDATE Employee SET salary = 4000 WHERE emp_id = 101;
+(It should fail with your custom error message.)
 
 -- Test:
 UPDATE Employee SET salary = 60000 WHERE emp_id = 1;  -- OK
@@ -896,21 +885,22 @@ UPDATE Employee SET salary = 30000 WHERE emp_id = 1;  -- Will fail with error
 ```sql
 -- Fires BEFORE UPDATE on job_title column only
 -- :OLD = values before update, :NEW = values after update
-
-CREATE OR REPLACE TRIGGER trg_job_title_change
-BEFORE UPDATE OF job_title ON Employee
+CREATE OR REPLACE TRIGGER trg_job_history
+AFTER UPDATE OF job_title ON Employee
 FOR EACH ROW
 BEGIN
-    -- Only log if job title actually changed (not same value)
-    IF :OLD.job_title <> :NEW.job_title THEN
-        INSERT INTO job_history (emp_id, old_job_title, old_dept_id, start_date, end_date)
-        VALUES (:OLD.emp_id, :OLD.job_title, :OLD.dept_id, :OLD.DoJ, SYSDATE);
-    END IF;
+    -- Insert the OLD details into history table
+    INSERT INTO job_history VALUES (
+        :OLD.emp_id,
+        :OLD.job_title,
+        :OLD.dept_id,
+        :OLD.DoJ,
+        SYSDATE -- The day the job changed
+    );
 END;
 /
-
 -- Test:
-UPDATE Employee SET job_title = 'Senior Analyst' WHERE emp_id = 1;
+UPDATE Employee SET job_title = 'Senior Analyst' WHERE emp_id = 101;
 SELECT * FROM job_history;
 ```
 
